@@ -4,13 +4,28 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Ursa for CL and BBS signatures
-ursa = { git = "https://github.com/hyperledger-archives/ursa", default-features = false, features = ["cl_native", "serde"] }
+# CL signatures (GitHub)
+cl-signature-rust = { git = "https://github.com/baozi78/cl-signature-rust" }
+
+# Ursa for legacy support (optional)
+# ursa = { git = "https://github.com/hyperledger-archives/ursa", default-features = false, features = ["cl_native", "serde"] }
+
+# BBS+ signatures
+bbs_plus = "0.19"
+
+# Arkworks ecosystem for BBS
+ark-bls12-381 = "0.4"
+ark-ec = "0.4"
+ark-ff = "0.4"
+ark-serialize = "0.4"
+ark-std = "0.4"
 
 # RSA blind signatures
 blind-rsa-signatures = { git = "https://github.com/baozi78/rust-blind-rsa-signatures" }
 rsa = "0.9"
-num-bigint = "0.4"
+num-bigint = { version = "0.4", features = ["rand"] }
+num-traits = "0.2"
+num-integer = "0.1"
 
 # Bulletproofs for range proofs
 bulletproofs = "4.0"

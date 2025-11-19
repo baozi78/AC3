@@ -26,8 +26,5 @@ pub use traits::{
     AnonymousCredentialScheme,
     PublicKey,
     SecretKey,
-    IssueRequest,
-    IssueResponse,
-    CredentialShow,
 };
 pub use tag_pool::TagPool;

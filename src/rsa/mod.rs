@@ -12,65 +12,138 @@
 //! 6. verify_credentials: 验证签名并检查msg重复
 
 use crate::error::{Result, CredentialError};
-use crate::traits::{
-    AnonymousCredentialScheme, PublicKey, SecretKey,
-    IssueRequest, IssueResponse, CredentialShow
-};
+use crate::traits::{AnonymousCredentialScheme, PublicKey, SecretKey};
 use crate::TagPool;
-use serde::{Deserialize, Serialize};
-use blind_rsa_signatures::{KeyPair, Options};
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
+use blind_rsa_signatures::{
+    KeyPair, Options,
+    PublicKey as BlindRSAPublicKey,
+    SecretKey as BlindRSASecretKey,
+    BlindedMessage, BlindSignature, Signature,
+    Secret, MessageRandomizer,
+};
 use rand::thread_rng;
 use std::sync::Mutex;
 use std::collections::HashMap;
 
 /// RSA公钥（3072位）
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct RSAPublicKey {
-    data: Vec<u8>,  // CBOR格式
+    pub inner: BlindRSAPublicKey,
 }
 
-impl PublicKey for RSAPublicKey {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self.data.clone())
-    }
-
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        Ok(Self { data: bytes.to_vec() })
+impl Serialize for RSAPublicKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: Serializer {
+        let json = serde_json::to_string(&self.inner)
+            .map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&json)
     }
 }
+
+impl<'de> Deserialize<'de> for RSAPublicKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let json = String::deserialize(deserializer)?;
+        let inner = serde_json::from_str(&json)
+            .map_err(serde::de::Error::custom)?;
+        Ok(RSAPublicKey { inner })
+    }
+}
+
+impl PublicKey for RSAPublicKey {}
 
 /// RSA私钥
 #[derive(Clone, Debug)]
 pub struct RSASecretKey {
-    data: Vec<u8>,  // CBOR格式
+    pub inner: BlindRSASecretKey,
 }
 
-impl SecretKey for RSASecretKey {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        Ok(self.data.clone())
-    }
+impl SecretKey for RSASecretKey {}
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        Ok(Self { data: bytes.to_vec() })
-    }
-}
+/// RSA用户私钥（RSA方案中用户没有真正的私钥，只是占位符）
+#[derive(Clone, Debug)]
+pub struct RSAUserSecretKey;
 
-/// 用户凭证（包含L个(msg, sig)对）
+/// RSA凭证（包含L个(msg, sig)对）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RSACredential {
     pub messages: Vec<Vec<u8>>,              // L个随机消息（用作tag）
-    pub signatures: Vec<Vec<u8>>,            // L个签名
-    pub msg_randomizers: Vec<Option<Vec<u8>>>, // L个msg_randomizer（验证时需要）
+    pub signatures: Vec<Signature>,          // L个签名（原始类型）
+    pub msg_randomizers: Vec<Option<MessageRandomizer>>, // L个msg_randomizer（原始类型）
     pub usage_count: u32,
     pub usage_limit: u32,
 }
 
-/// 盲化数据（用户保存用于去盲化）
+/// RSA发行请求
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct BlindingInfo {
-    msg: Vec<u8>,
-    secret_bytes: Vec<u8>,
-    msg_randomizer_bytes: Option<Vec<u8>>,
+pub struct RSAIssueRequest {
+    pub blind_messages: Vec<BlindedMessage>, // L个盲化消息（原始类型）
+    pub blinding_infos: Vec<BlindingInfo>,   // L个盲化信息（用户保留）
+    pub usage_limit: u32,
+}
+
+/// RSA发行响应
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RSAIssueResponse {
+    pub blind_signatures: Vec<BlindSignature>, // L个盲签名（原始类型）
+}
+
+/// RSA凭证展示
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RSACredentialShow {
+    pub tag: Vec<u8>,                        // msg_i（用作tag）
+    pub signature: Signature,                // sig_i（原始类型）
+    pub msg_randomizer: Option<MessageRandomizer>, // msg_randomizer_i（原始类型）
+}
+
+/// 盲化数据（用户保存用于去盲化）
+#[derive(Clone, Debug)]
+pub struct BlindingInfo {
+    pub msg: Vec<u8>,
+    pub secret: Secret,                      // 原始类型
+    pub msg_randomizer: Option<MessageRandomizer>, // 原始类型
+}
+
+// 自定义序列化
+impl Serialize for BlindingInfo {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: Serializer {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("BlindingInfo", 3)?;
+        state.serialize_field("msg", &self.msg)?;
+        state.serialize_field("secret", AsRef::<[u8]>::as_ref(&self.secret))?;
+        state.serialize_field("msg_randomizer", &self.msg_randomizer.as_ref().map(|mr| AsRef::<[u8]>::as_ref(mr).to_vec()))?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for BlindingInfo {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        #[derive(Deserialize)]
+        struct Helper {
+            msg: Vec<u8>,
+            secret: Vec<u8>,
+            msg_randomizer: Option<Vec<u8>>,
+        }
+        
+        let helper = Helper::deserialize(deserializer)?;
+        let msg_randomizer = helper.msg_randomizer.map(|bytes| {
+            if bytes.len() != 32 {
+                return Err(serde::de::Error::custom(format!("MessageRandomizer must be 32 bytes, got {}", bytes.len())));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            Ok(MessageRandomizer::new(arr))
+        }).transpose()?;
+        
+        Ok(BlindingInfo {
+            msg: helper.msg,
+            secret: Secret::new(helper.secret),
+            msg_randomizer,
+        })
+    }
 }
 
 /// 全局tag池（用于verify内部检查重复）
@@ -80,22 +153,24 @@ pub struct RSAScheme;
 
 impl RSAScheme {
     /// 获取tag池
-    fn get_tag_pool(pk_bytes: &[u8]) -> TagPool {
+    fn get_tag_pool(pk: &RSAPublicKey) -> TagPool {
+        let pk_bytes = serde_json::to_vec(&pk.inner).unwrap_or_default();
         let mut pools = TAG_POOLS.lock().unwrap();
         if pools.is_none() {
             *pools = Some(HashMap::new());
         }
         pools.as_mut().unwrap()
-            .entry(pk_bytes.to_vec())
+            .entry(pk_bytes)
             .or_insert_with(TagPool::new)
             .clone()
     }
 
     /// 更新tag池
-    fn update_tag_pool(pk_bytes: &[u8], pool: TagPool) {
+    fn update_tag_pool(pk: &RSAPublicKey, pool: TagPool) {
+        let pk_bytes = serde_json::to_vec(&pk.inner).unwrap_or_default();
         let mut pools = TAG_POOLS.lock().unwrap();
         if let Some(pools_map) = pools.as_mut() {
-            pools_map.insert(pk_bytes.to_vec(), pool);
+            pools_map.insert(pk_bytes, pool);
         }
     }
 }
@@ -103,6 +178,13 @@ impl RSAScheme {
 impl AnonymousCredentialScheme for RSAScheme {
     type PublicKey = RSAPublicKey;
     type SecretKey = RSASecretKey;
+    type UserSecretKey = RSAUserSecretKey;
+    type Credential = RSACredential;
+    type IssueRequest = RSAIssueRequest;
+    type IssueResponse = RSAIssueResponse;
+    type CredentialShow = RSACredentialShow;
+    type IndexType = u32;                    // RSA使用u32作为索引
+    type UsageLimitType = u32;               // RSA使用u32作为使用次数上限
 
     fn keygen() -> Result<(Self::PublicKey, Self::SecretKey)> {
         let mut rng = thread_rng();
@@ -111,29 +193,23 @@ impl AnonymousCredentialScheme for RSAScheme {
         let kp = KeyPair::generate(&mut rng, 3072)
             .map_err(|e| CredentialError::KeyGenError(e.to_string()))?;
 
-        // 序列化为字节（使用serde）
-        let pk_bytes = serde_json::to_vec(&kp.pk)
-            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
-        let sk_bytes = serde_json::to_vec(&kp.sk)
-            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
-
         Ok((
-            RSAPublicKey { data: pk_bytes },
-            RSASecretKey { data: sk_bytes },
+            RSAPublicKey { inner: kp.pk },
+            RSASecretKey { inner: kp.sk },
         ))
     }
 
-    fn generate_user_sk() -> Vec<u8> {
-        vec![]
+    fn generate_user_sk() -> Self::UserSecretKey {
+        RSAUserSecretKey // RSA方案中用户没有真正的私钥
     }
 
-    fn issue_request(pk: &Self::PublicKey, _user_sk: &[u8], usage_limit: u32) -> Result<IssueRequest> {
+    fn issue_request(
+        pk: &Self::PublicKey, 
+        _user_sk: &Self::UserSecretKey, 
+        usage_limit: Self::UsageLimitType
+    ) -> Result<Self::IssueRequest> {
         let mut rng = thread_rng();
         let options = Options::default();
-
-        // 从字节反序列化公钥
-        let public_key: blind_rsa_signatures::PublicKey = serde_json::from_slice(&pk.data)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
 
         // 生成L个随机消息并盲化
         let mut blind_messages = Vec::new();
@@ -146,244 +222,70 @@ impl AnonymousCredentialScheme for RSAScheme {
             rng.fill_bytes(&mut msg);
 
             // 盲化消息
-            let blinding_result = public_key.blind(&mut rng, &msg, true, &options)
+            let blinding_result = pk.inner.blind(&mut rng, &msg, true, &options)
                 .map_err(|e| CredentialError::SignatureError(format!("盲化失败: {}", e)))?;
 
-            blind_messages.push(blinding_result.blind_msg.clone());
-
-            // 保存盲化信息（使用AsRef转换为字节）
-            let secret_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&blinding_result.secret).to_vec();
-
-            let msg_randomizer_bytes = blinding_result.msg_randomizer.as_ref()
-                .map(|mr| AsRef::<[u8]>::as_ref(mr).to_vec());
+            blind_messages.push(blinding_result.blind_msg);
 
             blinding_infos.push(BlindingInfo {
                 msg,
-                secret_bytes,
-                msg_randomizer_bytes,
+                secret: blinding_result.secret,
+                msg_randomizer: blinding_result.msg_randomizer,
             });
         }
 
-        // 序列化请求数据（盲化消息和盲化信息）
-        let request_data = serde_json::to_vec(&(blind_messages, blinding_infos))
-            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
-
-        Ok(IssueRequest {
-            blinded_message: request_data,
+        Ok(RSAIssueRequest {
+            blind_messages,
+            blinding_infos,
             usage_limit,
         })
     }
 
     fn issue_response(
+        _pk: &Self::PublicKey,
         issuer_sk: &Self::SecretKey,
-        request: &IssueRequest,
-    ) -> Result<IssueResponse> {
+        request: &Self::IssueRequest,
+    ) -> Result<Self::IssueResponse> {
         let mut rng = thread_rng();
         let options = Options::default();
 
-        // 从字节反序列化私钥
-        let secret_key: blind_rsa_signatures::SecretKey = serde_json::from_slice(&issuer_sk.data)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        // 解析盲化消息
-        let (blind_messages, _): (Vec<Vec<u8>>, Vec<BlindingInfo>) =
-            serde_json::from_slice(&request.blinded_message)
-                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
         // 对每个盲化消息签名
-        let mut blind_sigs_cbor = Vec::new();
-        for blind_msg in blind_messages {
-            let blind_sig = secret_key.blind_sign(&mut rng, &blind_msg, &options)
+        let mut blind_signatures = Vec::new();
+        for blind_msg in &request.blind_messages {
+            let blind_sig = issuer_sk.inner.blind_sign(&mut rng, blind_msg, &options)
                 .map_err(|e| CredentialError::SignatureError(format!("盲签名失败: {}", e)))?;
 
-            // 转换为字节
-            let sig_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&blind_sig).to_vec();
-            blind_sigs_cbor.push(sig_bytes);
+            blind_signatures.push(blind_sig);
         }
 
-        Ok(IssueResponse {
-            blinded_signatures: blind_sigs_cbor,
-            blinding_factors: vec![],
+        Ok(RSAIssueResponse {
+            blind_signatures,
         })
     }
 
     fn issue_update(
         pk: &Self::PublicKey,
-        request: &IssueRequest,
-        response: &IssueResponse,
-        _user_sk: &[u8],
-    ) -> Result<Vec<Vec<u8>>> {
-        // 客户端：恢复最终签名 (对应 2.txt 的 pk.finalize)
-        // 注意：不需要 rng，只是去盲化操作
+        request: &Self::IssueRequest,
+        response: &Self::IssueResponse,
+        _user_sk: &Self::UserSecretKey,
+    ) -> Result<Self::Credential> {
+        // 去盲化得到真实签名
         let options = Options::default();
-
-        // 从字节反序列化公钥
-        let public_key: blind_rsa_signatures::PublicKey = serde_json::from_slice(&pk.data)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        // 解析盲化信息
-        let (_, blinding_infos): (Vec<Vec<u8>>, Vec<BlindingInfo>) =
-            serde_json::from_slice(&request.blinded_message)
-                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        let mut signatures = Vec::new();
-
-        for (i, blind_sig_bytes) in response.blinded_signatures.iter().enumerate() {
-            // 从字节创建盲签名
-            let blind_sig = blind_rsa_signatures::BlindSignature::new(blind_sig_bytes.clone());
-
-            let info = &blinding_infos[i];
-
-            // 从字节创建secret和msg_randomizer
-            let secret = blind_rsa_signatures::Secret::new(info.secret_bytes.clone());
-
-            let msg_randomizer = info.msg_randomizer_bytes.as_ref()
-                .map(|mr_bytes| {
-                    if mr_bytes.len() != 32 {
-                        panic!("MessageRandomizer length must be 32, got {}", mr_bytes.len());
-                    }
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(mr_bytes);
-                    blind_rsa_signatures::MessageRandomizer::new(arr)
-                });
-
-            // 去盲化：对应 2.txt 的 pk.finalize(&blind_sig, &secret, msg_randomizer, msg, &options)
-            let sig = public_key.finalize(&blind_sig, &secret, msg_randomizer, &info.msg, &options)
-                .map_err(|e| CredentialError::SignatureError(format!("去盲化失败: {}", e)))?;
-
-            // 转换签名为字节
-            let sig_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&sig).to_vec();
-            signatures.push(sig_bytes);
-        }
-
-        Ok(signatures)
-    }
-
-    fn show_credential(
-        _pk: &Self::PublicKey,
-        _user_sk: &[u8],
-        credential: &[u8],
-        index: u32,
-    ) -> Result<CredentialShow> {
-        let cred: RSACredential = serde_json::from_slice(credential)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        if index == 0 || index > cred.usage_limit {
-            return Err(CredentialError::InvalidParameter(
-                format!("index {} 超出范围 [1, {}]", index, cred.usage_limit)
-            ));
-        }
-
-        let idx = (index - 1) as usize;
-
-        // tag=msg, proof=(sig, msg_randomizer) 序列化
-        let proof_data = (&cred.signatures[idx], &cred.msg_randomizers[idx]);
-        let proof_bytes = serde_json::to_vec(&proof_data)
-            .map_err(|e| CredentialError::SerializationError(e.to_string()))?;
-
-        Ok(CredentialShow {
-            tag: cred.messages[idx].clone(),
-            proof: proof_bytes,
-        })
-    }
-
-    fn verify_credential(
-        pk: &Self::PublicKey,
-        show: &CredentialShow,
-    ) -> Result<bool> {
-        // 对应 2.txt 的 sig.verify(&pk, msg_randomizer, msg, &options)
-        let options = Options::default();
-
-        // 从字节反序列化公钥
-        let public_key: blind_rsa_signatures::PublicKey = serde_json::from_slice(&pk.data)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        // 反序列化 proof: (sig_bytes, msg_randomizer_bytes)
-        let (sig_bytes, msg_randomizer_bytes): (Vec<u8>, Option<Vec<u8>>) =
-            serde_json::from_slice(&show.proof)
-                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        // 从字节创建签名
-        let signature = blind_rsa_signatures::Signature::new(sig_bytes);
-
-        // 从字节创建 msg_randomizer
-        let msg_randomizer = msg_randomizer_bytes.as_ref()
-            .map(|mr_bytes| {
-                if mr_bytes.len() != 32 {
-                    panic!("MessageRandomizer length must be 32, got {}", mr_bytes.len());
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(mr_bytes);
-                blind_rsa_signatures::MessageRandomizer::new(arr)
-            });
-
-        let msg = &show.tag;
-
-        // 验证签名：对应 2.txt 的 sig.verify(&pk, msg_randomizer, msg, &options)
-        signature.verify(&public_key, msg_randomizer, msg, &options)
-            .map_err(|e| CredentialError::VerificationError(e.to_string()))?;
-
-        // 检查tag（msg）是否重复
-        let mut tag_pool = Self::get_tag_pool(&pk.data);
-        tag_pool.check_and_record_tag(msg)?;
-        Self::update_tag_pool(&pk.data, tag_pool);
-
-        Ok(true)
-    }
-}
-
-/// 辅助方法
-impl RSAScheme {
-    /// 从request和response创建凭证（执行去盲化）
-    pub fn create_credential(
-        pk: &RSAPublicKey,
-        request: &IssueRequest,
-        response: &IssueResponse,
-    ) -> Result<RSACredential> {
-        let options = Options::default();
-
-        // 从字节反序列化公钥
-        let public_key: blind_rsa_signatures::PublicKey = serde_json::from_slice(&pk.data)
-            .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
-
-        // 解析盲化信息
-        let (_, blinding_infos): (Vec<Vec<u8>>, Vec<BlindingInfo>) =
-            serde_json::from_slice(&request.blinded_message)
-                .map_err(|e| CredentialError::DeserializationError(e.to_string()))?;
 
         let mut messages = Vec::new();
         let mut signatures = Vec::new();
         let mut msg_randomizers = Vec::new();
 
-        for (i, blind_sig_cbor) in response.blinded_signatures.iter().enumerate() {
-            // 从字节创建盲签名
-            let blind_sig = blind_rsa_signatures::BlindSignature::new(blind_sig_cbor.clone());
-
-            let info = &blinding_infos[i];
-
-            // 从字节创建secret和msg_randomizer
-            let secret = blind_rsa_signatures::Secret::new(info.secret_bytes.clone());
-
-            let msg_randomizer = info.msg_randomizer_bytes.as_ref()
-                .map(|mr_bytes| {
-                    if mr_bytes.len() != 32 {
-                        panic!("MessageRandomizer length must be 32, got {}", mr_bytes.len());
-                    }
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(mr_bytes);
-                    blind_rsa_signatures::MessageRandomizer::new(arr)
-                });
+        for (i, blind_sig) in response.blind_signatures.iter().enumerate() {
+            let info = &request.blinding_infos[i];
 
             // 去盲化
-            let sig = public_key.finalize(&blind_sig, &secret, msg_randomizer, &info.msg, &options)
+            let sig = pk.inner.finalize(blind_sig, &info.secret, info.msg_randomizer, &info.msg, &options)
                 .map_err(|e| CredentialError::SignatureError(format!("去盲化失败: {}", e)))?;
 
-            // 转换签名为字节
-            let sig_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&sig).to_vec();
-
             messages.push(info.msg.clone());
-            signatures.push(sig_bytes);
-            msg_randomizers.push(info.msg_randomizer_bytes.clone());
+            signatures.push(sig);
+            msg_randomizers.push(info.msg_randomizer);
         }
 
         Ok(RSACredential {
@@ -393,6 +295,47 @@ impl RSAScheme {
             usage_count: 0,
             usage_limit: request.usage_limit,
         })
+    }
+
+    fn show_credential(
+        _pk: &Self::PublicKey,
+        _user_sk: &Self::UserSecretKey,
+        credential: &Self::Credential,
+        index: Self::IndexType,
+    ) -> Result<Self::CredentialShow> {
+        if index == 0 || index > credential.usage_limit {
+            return Err(CredentialError::InvalidParameter(
+                format!("index {} 超出范围 [1, {}]", index, credential.usage_limit)
+            ));
+        }
+
+        let idx = (index - 1) as usize;
+
+        Ok(RSACredentialShow {
+            tag: credential.messages[idx].clone(),
+            signature: credential.signatures[idx].clone(),
+            msg_randomizer: credential.msg_randomizers[idx].clone(),
+        })
+    }
+
+    fn verify_credential(
+        pk: &Self::PublicKey,
+        show: &Self::CredentialShow,
+    ) -> Result<bool> {
+        let options = Options::default();
+
+        let msg = &show.tag;
+
+        // 验证签名
+        show.signature.verify(&pk.inner, show.msg_randomizer, msg, &options)
+            .map_err(|e| CredentialError::VerificationError(e.to_string()))?;
+
+        // 检查tag（msg）是否重复
+        let mut tag_pool = Self::get_tag_pool(pk);
+        tag_pool.check_and_record_tag(msg)?;
+        Self::update_tag_pool(pk, tag_pool);
+
+        Ok(true)
     }
 }
 
@@ -405,8 +348,39 @@ mod tests {
         let result = RSAScheme::keygen();
         assert!(result.is_ok());
 
-        let (pk, sk) = result.unwrap();
-        assert!(pk.to_bytes().unwrap().len() > 0);
-        assert!(sk.to_bytes().unwrap().len() > 0);
+        let (_pk, _sk) = result.unwrap();
+        // 密钥生成成功即可
+    }
+
+    #[test]
+    fn test_rsa_basic_flow() {
+        // 1. keygen
+        let (issuer_pk, issuer_sk) = RSAScheme::keygen().unwrap();
+        let user_sk = RSAScheme::generate_user_sk();
+
+        // 2. issue_request
+        let request = RSAScheme::issue_request(&issuer_pk, &user_sk, 3).unwrap();
+        assert_eq!(request.usage_limit, 3);
+        assert_eq!(request.blind_messages.len(), 3);
+        assert_eq!(request.blinding_infos.len(), 3);
+
+        // 3. issue_response
+        let response = RSAScheme::issue_response(&issuer_pk, &issuer_sk, &request).unwrap();
+        assert_eq!(response.blind_signatures.len(), 3);
+
+        // 4. issue_update
+        let credential = RSAScheme::issue_update(&issuer_pk, &request, &response, &user_sk).unwrap();
+        assert_eq!(credential.messages.len(), 3);
+        assert_eq!(credential.signatures.len(), 3);
+        assert_eq!(credential.usage_limit, 3);
+
+        // 5. show_credential
+        let show = RSAScheme::show_credential(&issuer_pk, &user_sk, &credential, 1).unwrap();
+        assert!(!show.tag.is_empty());
+        assert!(!show.signature.is_empty());
+
+        // 6. verify_credential
+        let valid = RSAScheme::verify_credential(&issuer_pk, &show).unwrap();
+        assert!(valid);
     }
 }

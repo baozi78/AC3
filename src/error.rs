@@ -11,9 +11,6 @@ pub enum CredentialError {
     #[error("Invalid credential")]
     InvalidCredential,
 
-    #[error("Tag already used")]
-    TagAlreadyUsed,
-
     #[error("Usage limit exceeded")]
     UsageLimitExceeded,
 
@@ -40,6 +37,18 @@ pub enum CredentialError {
 
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
+
+    #[error("Invalid key size")]
+    InvalidKeySize,
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Tag already used")]
+    TagAlreadyUsed,
+
+    #[error("Proof verification failed")]
+    ProofVerificationFailed,
 }
 
 pub type Result<T> = std::result::Result<T, CredentialError>;
