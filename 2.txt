@@ -1,0 +1,22 @@
+帮我实现基于BBS的匿名凭证，可以使用https://github.com/docknetwork/crypto/tree/main/bbs_plus，https://docs.rs/bbs_plus/latest/bbs_plus/proof/，这个库。测试方法可以和rsa_integration_test.rs类似，
+//! 1. keygen - Issuer生成BLS12381的密钥对，对应let params_g1 = SignatureParamsG1::<Bls12_381>::generate_using_rng(&mut rng, 5);
+let keypair_g2 = KeypairG2::<Bls12_381>::generate(&mut rng, &params_g1);
+//! 2. issue_request 
+对应用户生成随机数s', 发送承诺C=g^s'h^r 和对应的POK{(s',r):C=g_0^s' \cdot g^r }和usage_limit: u32 给issuer
+//! 3. issue_response - Issuer验证pok，生成随机数s''和, 然后计算A=（Cg_0^s''）^{1/sk+e}，发送A e s''给用户
+//! 4. issue_update - 用户计算s=s’+s'', 得到最后的签名A e s
+//! 5. show_credentials - 用户证明POK{（A e s）：A=（gg_0^s）^{1/sk+e} & tag^s \cdot tag^i=h , i \in [1,L]}, 其中范围证明使用bulletproof,  公式A=（gg_0^s）^{1/sk+e} 的证明采用 pok = PoKOfSignatureG1Protocol::init(
+            &mut rng,
+            &sig_g1,
+            &params_g1,
+            &messages,
+            blindings,
+            &revealed_indices,
+        )
+        .unwrap();
+
+// challenge is generated (see tests)
+let proof = pok.gen_proof(&challenge).unwrap(); 搭配上tag^s \cdot tag^i=h , i \in [1,L] 的证明，所以可能需要自己展开写这个pok
+//! 6. verify_credentials - 验证pok，并查看tag是否重复。
+
+你理解后，先告诉我打算怎么弄，然后再开始改。

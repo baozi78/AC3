@@ -1,0 +1,20 @@
+我希望搭建一个支持BBS签名、CL签名和RSA盲签名的n次匿名凭证方案
+
+目前https://github.com/hyperledger-archives/ursa/libursa/src/cl已经实现了CL签名，src下的test文件夹的cl_test的anoncreds_demo()也有对应的函数，我希望的效果在issue阶段，对于一个随机数sk进行blind signture，然后额外确认凭证可用的次数L；然后show的时候需要额外证明tag=g^{1/sk+i}, i \in [1,L]， 这个范围证明使用rust的bulletproof库，如果是n次，应该有n个tag，然后issuer会有一个tag池子，检查是否重复，重复就reject，超过L次也拒绝。
+
+对于BBS签名，https://github.com/hyperledger-archives/ursa/blob/main/libzmix/bbs/tests/bbs.rs   也有对应的实现，我也希望在issue阶段实现blind issue，，然后额外确认凭证可用的次数L；最后用户拥有对于随机数sk的签名，然后show的时候需要额外证明tag=g^{1/sk+i}, i \in [1,L]，每次就证明一个tag， 这个范围证明使用rust的bulletproof库，如果是n次，应该有n个tag，然后issuer会有一个tag池子，检查是否重复，重复就reject，超过L次也拒绝。
+
+
+对于RSA 盲签名，我希望使用库https://github.com/baozi78/rust-blind-rsa-signatures，由于rsa签名不支持零知识证明，我希望在issue阶段确认凭证可用的次数L，然后进行一次性进行批量的n次blind issue。然后show阶段，每次show消耗一个签名。
+
+依次实现上述3个方案，我希望支持一下几个算法“
+keygen（iusser生成，主要把pk序列化起来）
+issuerequest，包含sk和L次
+issueresponse，
+issueupdate
+
+showcredentials（对于BBS和cl，每次生成一个tag，对于rsa，发一个签名，注意这里的签名也就是tag哈，注意避免）
+verifycredentials
+
+注意RSA CL使用3072位，BBS使用BLS12-384
+我希望把上面3个都打包成一个库，成为一个服务。希望你帮我列个todolist，我看看是否合适 ，然后依次做。每完成一个任务，可以阶段性的进行验证和测试。
