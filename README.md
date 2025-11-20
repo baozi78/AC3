@@ -323,8 +323,8 @@ AC3/
    - BBS+ 增强方案支持多消息签名
 
 2. **CL签名**:
-   - Camenisch, J., & Lysyanskaya, A. (2001). "An Efficient System for Non-transferable Anonymous Credentials"
-   - Hyperledger Indy实现参考
+   - Camenisch, J., & Lysyanskaya, A. (2003). "A Signature Scheme with Efficient Protocols"
+
 
 3. **RSA盲签名**:
    - Chaum, D. (1983). "Blind Signatures for Untraceable Payments"

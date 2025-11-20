@@ -33,9 +33,11 @@ pub struct CLPublicKey {
 
 impl PublicKey for CLPublicKey {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CLSecretKey {
+    #[serde(serialize_with = "serialize_bigint", deserialize_with = "deserialize_bigint")]
     pub p: BigInt,
+    #[serde(serialize_with = "serialize_bigint", deserialize_with = "deserialize_bigint")]
     pub q: BigInt,
 }
 
@@ -107,6 +109,21 @@ fn string_to_bigint(s: &str) -> Result<BigInt> {
     use num_traits::Num;
     BigInt::from_str_radix(s, 10)
         .map_err(|e| CredentialError::SerializationError(format!("Failed to parse BigInt: {}", e)))
+}
+
+fn serialize_bigint<S>(value: &BigInt, serializer: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&bigint_to_string(value))
+}
+
+fn deserialize_bigint<'de, D>(deserializer: D) -> std::result::Result<BigInt, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    string_to_bigint(&s).map_err(serde::de::Error::custom)
 }
 
 fn hash_to_bigint(inputs: &[&BigInt]) -> BigInt {
@@ -485,4 +502,36 @@ fn verify_cl_proof(
     }
     
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cl_secret_key_serialization() {
+        // 生成密钥对
+        let (pk, sk) = CLScheme::keygen().unwrap();
+        
+        // 序列化私钥
+        let serialized = serde_json::to_string(&sk).unwrap();
+        
+        // 反序列化私钥
+        let deserialized: CLSecretKey = serde_json::from_str(&serialized).unwrap();
+        
+        // 验证反序列化的私钥与原私钥相等
+        assert_eq!(sk.p, deserialized.p);
+        assert_eq!(sk.q, deserialized.q);
+        
+        // 验证反序列化的私钥可以正常使用
+        let user_sk = CLScheme::generate_user_sk();
+        let request = CLScheme::issue_request(&pk, &user_sk, 3).unwrap();
+        let response = CLScheme::issue_response(&pk, &deserialized, &request).unwrap();
+        let credential = CLScheme::issue_update(&pk, &request, &response, &user_sk).unwrap();
+        
+        // 验证凭证可以正常展示和验证
+        let show = CLScheme::show_credential(&pk, &user_sk, &credential, 1).unwrap();
+        let valid = CLScheme::verify_credential(&pk, &show).unwrap();
+        assert!(valid);
+    }
 }

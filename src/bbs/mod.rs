@@ -127,6 +127,27 @@ pub struct BBSSecretKey {
     pub inner: BBSPlusSecretKey<Fr>,  // BBS+私钥（可以通过.0访问Fr）
 }
 
+// 自定义序列化
+impl Serialize for BBSSecretKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: Serializer {
+        // 将 Fr 标量序列化为字节数组
+        serialize_fr(&self.inner.0).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BBSSecretKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        // 从字节数组反序列化 Fr 标量
+        let bytes = Vec::<u8>::deserialize(deserializer)?;
+        let fr = deserialize_fr(&bytes).map_err(serde::de::Error::custom)?;
+        Ok(BBSSecretKey {
+            inner: BBSPlusSecretKey(fr)
+        })
+    }
+}
+
 impl SecretKey for BBSSecretKey {}
 
 /// BBS用户私钥
@@ -1167,4 +1188,35 @@ fn verify_range_proof(
     
     // 验证Sigma范围证明
     verify_sigma_range_proof(pk, committed_i, usage_limit, &sigma_proof)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bbs_secret_key_serialization() {
+        // 生成密钥对
+        let (pk, sk) = BBSScheme::keygen().unwrap();
+        
+        // 序列化私钥
+        let serialized = serde_json::to_string(&sk).unwrap();
+        
+        // 反序列化私钥
+        let deserialized: BBSSecretKey = serde_json::from_str(&serialized).unwrap();
+        
+        // 验证反序列化的私钥与原私钥相等
+        assert_eq!(sk.inner.0, deserialized.inner.0);
+        
+        // 验证反序列化的私钥可以正常使用
+        let user_sk = BBSScheme::generate_user_sk();
+        let request = BBSScheme::issue_request(&pk, &user_sk, 3).unwrap();
+        let response = BBSScheme::issue_response(&pk, &deserialized, &request).unwrap();
+        let credential = BBSScheme::issue_update(&pk, &request, &response, &user_sk).unwrap();
+        
+        // 验证凭证可以正常展示和验证
+        let show = BBSScheme::show_credential(&pk, &user_sk, &credential, 1).unwrap();
+        let valid = BBSScheme::verify_credential(&pk, &show).unwrap();
+        assert!(valid);
+    }
 }

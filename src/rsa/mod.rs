@@ -59,6 +59,27 @@ pub struct RSASecretKey {
     pub inner: BlindRSASecretKey,
 }
 
+// 自定义序列化
+impl Serialize for RSASecretKey {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: Serializer {
+        // 使用 blind-rsa-signatures 库的内置序列化
+        let json = serde_json::to_string(&self.inner)
+            .map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&json)
+    }
+}
+
+impl<'de> Deserialize<'de> for RSASecretKey {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        let json = String::deserialize(deserializer)?;
+        let inner = serde_json::from_str(&json)
+            .map_err(serde::de::Error::custom)?;
+        Ok(RSASecretKey { inner })
+    }
+}
+
 impl SecretKey for RSASecretKey {}
 
 /// RSA用户私钥（RSA方案中用户没有真正的私钥，只是占位符）
@@ -350,6 +371,29 @@ mod tests {
 
         let (_pk, _sk) = result.unwrap();
         // 密钥生成成功即可
+    }
+
+    #[test]
+    fn test_rsa_secret_key_serialization() {
+        // 生成密钥对
+        let (pk, sk) = RSAScheme::keygen().unwrap();
+        
+        // 序列化私钥
+        let serialized = serde_json::to_string(&sk).unwrap();
+        
+        // 反序列化私钥
+        let deserialized: RSASecretKey = serde_json::from_str(&serialized).unwrap();
+        
+        // 验证反序列化的私钥可以正常使用
+        let user_sk = RSAScheme::generate_user_sk();
+        let request = RSAScheme::issue_request(&pk, &user_sk, 2).unwrap();
+        let response = RSAScheme::issue_response(&pk, &deserialized, &request).unwrap();
+        let credential = RSAScheme::issue_update(&pk, &request, &response, &user_sk).unwrap();
+        
+        // 验证凭证可以正常展示和验证
+        let show = RSAScheme::show_credential(&pk, &user_sk, &credential, 1).unwrap();
+        let valid = RSAScheme::verify_credential(&pk, &show).unwrap();
+        assert!(valid);
     }
 
     #[test]
