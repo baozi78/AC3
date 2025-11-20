@@ -83,14 +83,6 @@ pub trait AnonymousCredentialScheme {
 - **Tag计算**：`tag = h^{1/(r+i)}`（i为使用次数索引）
 - **零知识证明**：统一的Sigma协议证明签名有效性和索引范围
 
-**特点**：
-- ✅ 签名长度短（单个G1元素）
-- ✅ 验证速度快（2次配对运算）
-- ✅ 支持批量验证
-- ✅ 自定义Sigma-protocol范围证明（替代Bulletproofs）
-
-**适用场景**：高频验证场景、移动设备、区块链应用
-
 ### 2. CL方案
 
 基于RSA困难问题的经典匿名凭证方案，广泛应用于Hyperledger Indy等项目。
@@ -101,13 +93,6 @@ pub trait AnonymousCredentialScheme {
 - **Tag计算**：`tag = g^{1/(m+i)}`
 - **零知识证明**：Schnorr协议证明签名知识
 
-**特点**：
-- ✅ 成熟稳定，经过大量实践验证
-- ✅ 支持高效的选择性披露
-- ⚠️ 签名和证明体积较大
-- ⚠️ 密钥生成和签名较慢
-
-**适用场景**：身份凭证、KYC系统、企业级应用
 
 ### 3. RSA盲签名方案
 
@@ -119,13 +104,6 @@ pub trait AnonymousCredentialScheme {
 - **签名**：Issuer对盲化消息签名，用户去盲化得到真实签名
 - **Tag计算**：`tag = msg`（直接使用消息作为tag）
 
-**特点**：
-- ✅ 实现简单，易于理解
-- ✅ 盲化性质天然保证匿名性
-- ⚠️ 每次使用需要预生成L个随机消息
-- ⚠️ 签名体积较大（3072位）
-
-**适用场景**：匿名投票、代币发行、简单认证系统
 
 ## 快速开始
 
@@ -191,36 +169,6 @@ let request_json = serde_json::to_string(&request)?;
 let received_request: BBSIssueRequest = serde_json::from_str(&request_json)?;
 ```
 
-## 安全保证
-
-### 密码学安全性
-
-- **匿名性**：发行者无法将凭证与用户关联（通过盲化实现）
-- **不可伪造性**：攻击者无法伪造有效凭证（基于底层困难问题）
-- **防重放**：tag池机制防止凭证被重复使用
-- **零知识性**：展示凭证时不泄露秘密信息（通过ZK证明实现）
-
-### 防重放机制
-
-每次使用凭证时，系统会生成唯一的tag：
-
-- **BBS**: `tag = h^{1/(r+i)}`
-- **CL**: `tag = g^{1/(m+i)}`
-- **RSA**: `tag = msg_i`
-
-验证者维护tag池，拒绝重复的tag，从而防止重放攻击。
-
-### 范围证明
-
-BBS和CL方案中，用户需要证明索引 `i ∈ [1, L]`：
-
-- **BBS方案**：使用自定义Sigma-protocol范围证明
-  - 将 `i` 分解为比特
-  - 为每个比特生成Pedersen承诺
-  - 使用Schnorr OR证明每个比特为0或1
-  
-- **CL方案**：使用大整数范围证明（基于Pedersen承诺）
-
 ## 测试
 
 运行完整测试套件：
@@ -239,13 +187,6 @@ cargo test --test rsa_integration_test
 cargo test
 ```
 
-测试覆盖：
-- ✅ 完整的凭证发行和验证流程
-- ✅ 多次使用凭证（1到L次）
-- ✅ 重放攻击防御
-- ✅ 边界条件测试（index=0, index>L）
-- ✅ 多用户场景
-- ✅ 序列化兼容性
 
 ## 性能指标
 
@@ -302,16 +243,6 @@ AC3/
 - **rand**: 随机数生成
 - **thiserror**: 错误处理
 
-## 贡献指南
-
-欢迎贡献代码！请遵循以下步骤：
-
-1. Fork本项目
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 开启Pull Request
-
 ## 许可证
 
 本项目采用MIT许可证 - 详见LICENSE文件
@@ -329,40 +260,5 @@ AC3/
 3. **RSA盲签名**:
    - Chaum, D. (1983). "Blind Signatures for Untraceable Payments"
    - IETF Draft: RSA Blind Signatures
-
-4. **零知识证明**:
-   - Schnorr协议
-   - Sigma协议范围证明
-   - Fiat-Shamir启发式
-
-## 常见问题（FAQ）
-
-### Q: 如何选择合适的方案？
-
-- **高性能需求**：选择BBS方案（短签名、快速验证）
-- **企业级应用**：选择CL方案（成熟稳定、广泛支持）
-- **简单场景**：选择RSA方案（实现简单、易于理解）
-
-### Q: 为什么BBS方案不使用Bulletproofs？
-
-我们实现了自定义的Sigma-protocol范围证明，相比Bulletproofs：
-- ✅ 实现更简单，依赖更少
-- ✅ 证明生成和验证更快
-- ✅ 更容易审计和调试
-
-### Q: Tag池需要持久化吗？
-
-是的，在生产环境中应该将tag池持久化到数据库或文件系统，以防止服务重启后重放攻击。
-
-### Q: 支持多属性凭证吗？
-
-当前版本聚焦于n次使用限制。多属性凭证可以通过扩展签名消息结构实现，欢迎贡献！
-
-## 联系方式
-
-- GitHub Issues: https://github.com/baozi78/AC3/issues
-- Email: [维护者邮箱]
-
----
 
 **⚠️ 安全提醒**：本项目仅供学习和研究使用。在生产环境部署前，请进行充分的安全审计和测试。
